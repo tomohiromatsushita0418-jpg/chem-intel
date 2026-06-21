@@ -1,4 +1,5 @@
 streamlit>=1.33
+google-genai>=0.3
 anthropic>=0.40
 requests>=2.31
 SQLAlchemy>=2.0

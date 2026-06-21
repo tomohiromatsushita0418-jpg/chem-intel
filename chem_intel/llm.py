@@ -1,6 +1,8 @@
-"""Anthropic Claude クライアント + ウェブ検索ヘルパー。
+"""LLMクライアント + ウェブ検索ヘルパー（マルチプロバイダ）。
 
-web search server tool を使って、出典付きの調査結果テキストを返す。
+- Gemini（無料枠・Google検索グラウンディング）… 既定・推奨
+- Anthropic Claude（従量課金・web search tool）
+どちらでも research()/synthesize() の戻り値は同じ ResearchResult。
 """
 from __future__ import annotations
 
@@ -28,14 +30,14 @@ class ResearchResult:
         return "\n".join(lines)
 
 
-def _client(settings: Settings):
+# ============================ Anthropic ============================
+def _anthropic_client(settings: Settings):
     from anthropic import Anthropic
 
     return Anthropic(api_key=settings.anthropic_api_key)
 
 
-def _extract(message) -> ResearchResult:
-    """Messages API のレスポンスから本文と引用を抽出。"""
+def _anthropic_extract(message) -> ResearchResult:
     text_parts: list[str] = []
     citations: list[dict] = []
     for block in message.content:
@@ -44,35 +46,18 @@ def _extract(message) -> ResearchResult:
             text_parts.append(block.text)
             for cit in getattr(block, "citations", None) or []:
                 citations.append(
-                    {
-                        "title": getattr(cit, "title", None),
-                        "url": getattr(cit, "url", None),
-                    }
+                    {"title": getattr(cit, "title", None), "url": getattr(cit, "url", None)}
                 )
         elif btype == "web_search_tool_result":
             for item in getattr(block, "content", None) or []:
                 url = getattr(item, "url", None)
                 if url:
-                    citations.append(
-                        {"title": getattr(item, "title", None), "url": url}
-                    )
+                    citations.append({"title": getattr(item, "title", None), "url": url})
     return ResearchResult(text="".join(text_parts).strip(), citations=citations)
 
 
-def research(
-    settings: Settings,
-    prompt: str,
-    *,
-    system: str | None = None,
-    use_web: bool = True,
-    model: str | None = None,
-    max_tokens: int = 8000,
-) -> ResearchResult:
-    """ウェブ検索付きで Claude に調査させる。"""
-    if not settings.has_llm:
-        return ResearchResult(text="*(ANTHROPIC_API_KEY 未設定のため調査をスキップ)*")
-
-    client = _client(settings)
+def _anthropic_research(settings, prompt, system, use_web, model, max_tokens) -> ResearchResult:
+    client = _anthropic_client(settings)
     kwargs: dict = {
         "model": model or settings.research_model,
         "max_tokens": max_tokens,
@@ -82,32 +67,104 @@ def research(
         kwargs["system"] = system
     if use_web:
         kwargs["tools"] = [
-            {
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": settings.web_search_max_uses,
-            }
+            {"type": "web_search_20250305", "name": "web_search",
+             "max_uses": settings.web_search_max_uses}
         ]
+    message = client.messages.create(**kwargs)
+    return _anthropic_extract(message)
+
+
+def _anthropic_synthesize(settings, prompt, max_tokens) -> str:
+    client = _anthropic_client(settings)
+    message = client.messages.create(
+        model=settings.synthesis_model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return "".join(b.text for b in message.content if getattr(b, "type", None) == "text").strip()
+
+
+# ============================ Gemini ============================
+def _gemini_client(settings: Settings):
+    from google import genai
+
+    return genai.Client(api_key=settings.gemini_api_key)
+
+
+def _gemini_extract(resp) -> ResearchResult:
+    text = getattr(resp, "text", None) or ""
+    citations: list[dict] = []
     try:
-        message = client.messages.create(**kwargs)
-        return _extract(message)
-    except Exception as e:  # API エラーでもアプリ全体は止めない
+        for cand in getattr(resp, "candidates", None) or []:
+            gm = getattr(cand, "grounding_metadata", None)
+            for chunk in (getattr(gm, "grounding_chunks", None) or []) if gm else []:
+                web = getattr(chunk, "web", None)
+                if web and getattr(web, "uri", None):
+                    citations.append({"title": getattr(web, "title", None), "url": web.uri})
+    except Exception:
+        pass
+    return ResearchResult(text=text.strip(), citations=citations)
+
+
+def _gemini_research(settings, prompt, system, use_web, model, max_tokens) -> ResearchResult:
+    from google.genai import types
+
+    client = _gemini_client(settings)
+    cfg_kwargs: dict = {"max_output_tokens": max_tokens}
+    if system:
+        cfg_kwargs["system_instruction"] = system
+    if use_web:
+        cfg_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+    resp = client.models.generate_content(
+        model=model or settings.gemini_model,
+        contents=prompt,
+        config=types.GenerateContentConfig(**cfg_kwargs),
+    )
+    return _gemini_extract(resp)
+
+
+def _gemini_synthesize(settings, prompt, max_tokens) -> str:
+    from google.genai import types
+
+    client = _gemini_client(settings)
+    resp = client.models.generate_content(
+        model=settings.gemini_model,
+        contents=prompt,
+        config=types.GenerateContentConfig(max_output_tokens=max_tokens),
+    )
+    return (getattr(resp, "text", None) or "").strip()
+
+
+# ============================ 共通インターフェース ============================
+def research(
+    settings: Settings,
+    prompt: str,
+    *,
+    system: str | None = None,
+    use_web: bool = True,
+    model: str | None = None,
+    max_tokens: int = 8000,
+) -> ResearchResult:
+    """ウェブ検索付きで調査。プロバイダは settings.provider で自動選択。"""
+    provider = settings.provider
+    if provider is None:
+        return ResearchResult(text="*(AIキー未設定のため調査をスキップ)*")
+    try:
+        if provider == "gemini":
+            return _gemini_research(settings, prompt, system, use_web, model, max_tokens)
+        return _anthropic_research(settings, prompt, system, use_web, model, max_tokens)
+    except Exception as e:
         return ResearchResult(text=f"*(調査中にエラー: {e})*")
 
 
 def synthesize(settings: Settings, prompt: str, *, max_tokens: int = 4000) -> str:
-    """ウェブ検索なしで要約・合成（エグゼクティブサマリー等）。"""
-    if not settings.has_llm:
-        return "*(ANTHROPIC_API_KEY 未設定)*"
-    client = _client(settings)
+    """ウェブ検索なしで要約・合成。"""
+    provider = settings.provider
+    if provider is None:
+        return "*(AIキー未設定)*"
     try:
-        message = client.messages.create(
-            model=settings.synthesis_model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return "".join(
-            b.text for b in message.content if getattr(b, "type", None) == "text"
-        ).strip()
+        if provider == "gemini":
+            return _gemini_synthesize(settings, prompt, max_tokens)
+        return _anthropic_synthesize(settings, prompt, max_tokens)
     except Exception as e:
         return f"*(合成中にエラー: {e})*"

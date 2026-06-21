@@ -76,7 +76,12 @@ with st.sidebar:
 
     st.divider()
     if not settings.has_llm:
-        st.error("ANTHROPIC_API_KEY が未設定です。調査機能が動きません。")
+        st.error(
+            "AIキーが未設定です。GEMINI_API_KEY（無料・推奨）または "
+            "ANTHROPIC_API_KEY を設定してください。"
+        )
+    else:
+        st.caption(f"🤖 AIエンジン: **{settings.provider}**")
     if not settings.comtrade_key:
         st.caption("💡 COMTRADE_KEY 設定で貿易データの取得が安定します。")
 
