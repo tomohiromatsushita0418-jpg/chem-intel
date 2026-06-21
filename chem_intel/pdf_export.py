@@ -77,27 +77,69 @@ def _weasyprint_pdf(markdown_text: str, title: str) -> bytes:
     return HTML(string=markdown_to_html(markdown_text, title)).write_pdf()
 
 
-def _fpdf_pdf(markdown_text: str, title: str) -> bytes:
-    """純Pythonフォールバック。markdown→HTML本文を fpdf2 で描画。"""
+def _new_fpdf(font_path: str | None):
     from fpdf import FPDF
-
-    font_path = _find_font()
-    body = md_lib.markdown(
-        markdown_text, extensions=["tables", "sane_lists"]
-    )
 
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_margins(15, 15, 15)
     pdf.add_page()
     if font_path:
-        pdf.add_font("CJK", "", font_path)
-        pdf.add_font("CJK", "B", font_path)
-        pdf.add_font("CJK", "I", font_path)
+        for style in ("", "B", "I", "BI"):
+            pdf.add_font("CJK", style, font_path)
         pdf.set_font("CJK", size=10)
     else:
         pdf.set_font("helvetica", size=10)
-    pdf.write_html(body)
+    return pdf
+
+
+def _break_long_tokens(text: str, n: int = 40) -> str:
+    """空白の無い超長文字列（URL等）に改行機会(空白)を挿入。"""
+    return re.sub(r"(\S{%d})(?=\S)" % n, r"\1 ", text)
+
+
+def _fpdf_pdf(markdown_text: str, title: str) -> bytes:
+    """純Pythonフォールバック。整形描画→失敗時はテキスト描画で必ずPDFを返す。"""
+    font_path = _find_font()
+
+    # --- 1) 整形(HTML)描画を試す ---
+    try:
+        body = md_lib.markdown(markdown_text, extensions=["tables", "sane_lists"])
+        # 等幅(Courier)＝日本語非対応なので除去、リンクはテキスト化、長URLは改行可能に
+        body = re.sub(r"</?(code|pre|tt|kbd|samp)[^>]*>", "", body)
+        body = re.sub(r"<a\b[^>]*>", "", body)
+        body = body.replace("</a>", "")
+        body = _break_long_tokens(body)
+        pdf = _new_fpdf(font_path)
+        pdf.write_html(body)
+        return bytes(pdf.output())
+    except Exception:
+        pass
+
+    # --- 2) 確実に出るテキスト描画 ---
+    from fpdf.enums import XPos, YPos
+
+    pdf = _new_fpdf(font_path)
+    epw = pdf.epw  # 有効ページ幅
+    # markdownの装飾記号を軽く除去して読みやすく
+    for raw in markdown_text.splitlines():
+        line = raw.rstrip()
+        line = re.sub(r"`([^`]*)`", r"\1", line)         # inline code
+        line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)  # links→text
+        line = _break_long_tokens(line)
+        if line.startswith("# "):
+            pdf.set_font("CJK" if font_path else "helvetica", "B", 16); line = line[2:]
+        elif line.startswith("## "):
+            pdf.set_font("CJK" if font_path else "helvetica", "B", 13); line = line[3:]
+        elif line.startswith("### "):
+            pdf.set_font("CJK" if font_path else "helvetica", "B", 11); line = line[4:]
+        else:
+            pdf.set_font("CJK" if font_path else "helvetica", "", 10)
+        try:
+            pdf.multi_cell(epw, 6, line if line else " ",
+                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        except Exception:
+            pdf.ln(6)  # 描画不能な行はスキップして継続
     return bytes(pdf.output())
 
 
