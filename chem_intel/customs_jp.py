@@ -6,7 +6,7 @@ HSコードの特定、日本の輸出入実績、実行関税率(MFN/EPA)、規
 from __future__ import annotations
 
 from .identity import ChemicalIdentity
-from .llm import ResearchResult, research
+from .llm import PRO_SYSTEM, ResearchResult, research
 
 CUSTOMS_STATS = "https://www.customs.go.jp/toukei/info/"
 TARIFF_SCHEDULE = "https://www.customs.go.jp/tariff/"
@@ -36,11 +36,11 @@ def analyze(settings, ident: ChemicalIdentity, hs_hint: str | None = None) -> Re
 
 数値は出典年を明記し、不確かなものは「要確認」と明示。推測で断定しないこと。"""
 
-    res = research(settings, prompt, max_tokens=5000)
+    res = research(settings, prompt, system=PRO_SYSTEM, max_tokens=5000)
     res.text += (
-        f"\n\n**🔗 財務省・税関で直接確認:** "
-        f"[貿易統計]({CUSTOMS_STATS}) / "
-        f"[統計検索]({STATS_SEARCH}) / "
+        f"\n\n**一次情報（財務省・税関）:** "
+        f"[貿易統計]({CUSTOMS_STATS}) ／ "
+        f"[統計検索]({STATS_SEARCH}) ／ "
         f"[実行関税率表]({TARIFF_SCHEDULE})"
     )
     return res

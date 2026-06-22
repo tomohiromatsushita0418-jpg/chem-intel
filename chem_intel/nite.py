@@ -8,7 +8,7 @@ from __future__ import annotations
 from urllib.parse import quote
 
 from .identity import ChemicalIdentity
-from .llm import ResearchResult, research
+from .llm import PRO_SYSTEM, ResearchResult, research
 
 CHRIP_TOP = "https://www.chem-info.nite.go.jp/chem/chrip/chrip_search/systemTop"
 
@@ -43,11 +43,11 @@ def analyze(settings, ident: ChemicalIdentity) -> ResearchResult:
 「要確認」と明記。最後に、商社の営業担当が顧客に説明する際の実務上の注意点を
 3〜5行でまとめてください。日本語で、Markdown 見出し・箇条書きで出力。"""
 
-    res = research(settings, prompt, max_tokens=6000)
+    res = research(settings, prompt, system=PRO_SYSTEM, max_tokens=6000)
     # CHRIP への直リンクを末尾に追加
     res.text += (
-        f"\n\n**🔗 NITE CHRIP で直接確認:** "
-        f"[CHRIP検索]({chrip_search_url(ident)}) / "
+        f"\n\n**一次情報（NITE CHRIP）:** "
+        f"[CHRIP検索]({chrip_search_url(ident)}) ／ "
         f"[CHRIPトップ]({CHRIP_TOP})"
     )
     return res

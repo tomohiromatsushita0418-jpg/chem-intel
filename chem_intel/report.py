@@ -116,7 +116,7 @@ def _identity_markdown(ident: ChemicalIdentity) -> str:
     if ident.synonyms:
         md += f"\n**別名（抜粋）:** {', '.join(ident.synonyms[:12])}\n"
     if ident.cid:
-        md += f"\n🔗 [PubChem で見る](https://pubchem.ncbi.nlm.nih.gov/compound/{ident.cid})\n"
+        md += f"\n**一次情報:** [PubChem 化合物ページ](https://pubchem.ncbi.nlm.nih.gov/compound/{ident.cid})\n"
     return md
 
 
@@ -151,15 +151,18 @@ def generate(
         "logistics": lambda: regulations.analyze_logistics(settings, ident),
     }
     results: dict[str, ResearchResult] = {}
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    # 並列数を絞り、無料APIの過負荷(503)を回避
+    with ThreadPoolExecutor(max_workers=3) as ex:
         futures = {ex.submit(fn): key for key, fn in tasks.items()}
         done = 0
         for fut in as_completed(futures):
             key = futures[fut]
             try:
                 results[key] = fut.result()
-            except Exception as e:
-                results[key] = ResearchResult(text=f"*(調査失敗: {e})*")
+            except Exception:
+                results[key] = ResearchResult(
+                    text="> 本セクションは一時的に取得できませんでした。再生成で解消します。"
+                )
             done += 1
             progress(f"調査中… ({done}/{len(tasks)})", 0.15 + 0.6 * done / len(tasks))
 
@@ -181,87 +184,120 @@ def generate(
     )
     summary = synthesize(
         settings,
-        f"""以下は化学品『{ident.display_name}』の調査資料です。これを読んで、
-化学品商社の営業がひと目で要点を掴めるエグゼクティブサマリーを、Markdownで
-作成してください。構成: ①この物質は何か（2-3行）②市場のポイント（規模/成長/価格）
-③主要メーカー・需要 ④規制・物流の注意点 ⑤商社としての商機・リスク。
-箇条書き中心、各項目簡潔に。資料に無い情報は創作しないこと。
+        f"""あなたは大手戦略コンサルティングファームのシニアコンサルタントです。
+化学品『{ident.display_name}』に関する以下の調査資料をもとに、経営層・事業責任者向けの
+エグゼクティブ・サマリーを作成してください。
 
---- 資料 ---
+要件:
+- プロフェッショナルで簡潔な「だ・である」調の断定的な文体。AIらしい前置きや
+  「〜と思われます」等の冗長表現は禁止。
+- 数値・固有名詞を主語にした、示唆に富む文章。
+- 構成（この見出しを使う）:
+  **要旨**（3〜4文で全体像）/ **市場環境**（規模・成長・価格動向）/
+  **競争構造**（主要プレイヤー・需給）/ **規制・物流上の論点** /
+  **示唆と推奨アクション**（商社としての商機・リスクと打ち手を3点）
+- 各項目は箇条書きを活用し、要点を太字で強調。
+- 資料に無い数値は創作しない。
+
+--- 調査資料 ---
 {combined[:18000]}""",
         max_tokens=2500,
     )
+    if not summary:
+        summary = "_（サマリーは再生成時に作成されます）_"
 
-    # 結合
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    md = f"""# 化学品インテリジェンスレポート：{ident.display_name}
+    # 結合（プロフェッショナル・レポート体裁）
+    now = datetime.datetime.now().strftime("%Y年%m月%d日")
+    cas = ident.cas or "—"
+    formula = ident.molecular_formula or "—"
+    hs_disp = snap.hs_code or hs6 or "—"
+    md = f"""<!--COVER
+title={ident.display_name}
+subtitle=化学品インテリジェンス・レポート
+cas={cas}
+formula={formula}
+hs={hs_disp}
+date={now}
+-->
 
-_生成日時: {now}　|　クエリ: `{query}`_
+# 化学品インテリジェンス・レポート
+
+## {ident.display_name}
+
+| 項目 | 内容 |
+|---|---|
+| 対象物質 | {ident.display_name} |
+| CAS登録番号 | {cas} |
+| 分子式 | {formula} |
+| HSコード | {hs_disp} |
+| 作成日 | {now} |
+| データソース | PubChem・NITE CHRIP・財務省貿易統計・UN Comtrade・ECHA／一次情報＋AI調査 |
 
 ---
 
-## 📋 エグゼクティブサマリー
+# 1. エグゼクティブ・サマリー
 {summary}
 
 ---
 
-## 🧪 物質同定情報
+# 2. 物質同定情報
 {_identity_markdown(ident)}
 
 ---
 
-## 📖 概要・性状・用途
+# 3. 製品概要・物性・用途
 {results['overview'].text}
 
 ---
 
-## 📊 世界市場・需給
+# 4. 世界市場・需給動向
 {results['market'].text}
 
 ---
 
-## 🌐 世界貿易データ（UN Comtrade）
+# 5. 世界貿易フロー（UN Comtrade）
 {trade_md}
 
 ---
 
-## 🏭 主要メーカー・ユーザー・サプライチェーン
+# 6. 競争環境：主要メーカー・需要家・サプライチェーン
 {results['players'].text}
 
 ---
 
-## 💰 価格・トレンド・リスク・商機
+# 7. 価格・トレンド・リスク・事業機会
 {results['pricing'].text}
 
 ---
 
-## ⚖️ 日本の規制（NITE CHRIP / 各省庁）
+# 8. 日本国内規制（化審法・安衛法・毒劇法・消防法 等）
 {results['nite'].text}
 
 ---
 
-## 🛃 輸出入・関税（財務省 貿易統計）
+# 9. 輸出入・関税（財務省貿易統計・外為法）
 {results['customs'].text}
 
 ---
 
-## 🌍 海外規制（REACH/TSCA/各国）
+# 10. 海外規制（EU REACH／米国TSCA／各国）
 {results['reg_global'].text}
 
 ---
 
-## 🚚 物流・輸送規制
+# 11. 物流・輸送規制
 {results['logistics'].text}
 
 ---
 
-## 🔗 主要出典
+# 出典・参考資料
 {_dedupe_citations_md(all_citations)}
 
 ---
 
-_本レポートは公開情報とAIによる調査を基にした参考資料です。最終的な規制判断・
-取引判断は一次情報（NITE CHRIP・財務省・ECHA・SDS等）で必ずご確認ください。_
+*免責事項：本レポートは公開情報およびAIによる調査を基に作成した参考資料である。
+規制適合・取引可否の最終判断は、必ず一次情報（NITE CHRIP・財務省・ECHA・各社SDS等）
+により確認されたい。*
 """
     progress("完了", 1.0)
     return {
@@ -282,8 +318,20 @@ def _dedupe_citations(cits: list[dict]) -> list[dict]:
     return out
 
 
+def _clean_title(c: dict) -> str:
+    """出典の表示名。タイトルが無ければドメイン名を使う（長いリダイレクトURLは隠す）。"""
+    t = (c.get("title") or "").strip()
+    if t:
+        return t
+    url = c.get("url", "")
+    m = re.search(r"https?://([^/]+)", url)
+    return m.group(1) if m else "出典"
+
+
 def _dedupe_citations_md(cits: list[dict]) -> str:
     out = _dedupe_citations(cits)
     if not out:
         return "_（自動収集された出典はありません）_"
-    return "\n".join(f"- [{c.get('title') or c['url']}]({c['url']})" for c in out)
+    return "\n".join(
+        f"{i}. [{_clean_title(c)}]({c['url']})" for i, c in enumerate(out, 1)
+    )
