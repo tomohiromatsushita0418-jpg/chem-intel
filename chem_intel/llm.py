@@ -114,19 +114,21 @@ def _gemini_extract(resp) -> ResearchResult:
     return ResearchResult(text=text.strip(), citations=citations)
 
 
-# 過負荷(503)・レート(429)時に順に試す予備モデル
-_GEMINI_FALLBACKS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest"]
-_TRANSIENT = ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
-              "high demand", "overloaded", "rate limit")
+# 過負荷(503)・レート(429)時に順に試す予備モデル（クォータが分離した別エイリアス含む）
+_GEMINI_FALLBACKS = ["gemini-flash-latest", "gemini-2.5-flash-lite",
+                     "gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.0-flash-lite"]
+_TRANSIENT = ("503", "UNAVAILABLE", "high demand", "overloaded")
+# 日次・分次クォータ超過。リトライではなく即フォールバックすべき
+_QUOTA = ("429", "RESOURCE_EXHAUSTED", "quota", "rate limit")
 
 
-def _is_transient(err: Exception) -> bool:
-    s = str(err)
-    return any(t.lower() in s.lower() for t in _TRANSIENT)
+def _match(err: Exception, words) -> bool:
+    s = str(err).lower()
+    return any(w.lower() in s for w in words)
 
 
 def _gemini_generate(settings, prompt, system, use_web, model, max_tokens):
-    """503/429を自動リトライ＋予備モデルへフォールバックして生成。"""
+    """503は同モデルでリトライ、429(クォータ超過)は即別モデルへフォールバック。"""
     import time
 
     from google.genai import types
@@ -139,7 +141,6 @@ def _gemini_generate(settings, prompt, system, use_web, model, max_tokens):
         cfg_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
     cfg = types.GenerateContentConfig(**cfg_kwargs)
 
-    # 試行するモデル順（指定→既定→予備）
     models: list[str] = []
     for m in [model, settings.gemini_model, *_GEMINI_FALLBACKS]:
         if m and m not in models:
@@ -147,17 +148,19 @@ def _gemini_generate(settings, prompt, system, use_web, model, max_tokens):
 
     last_err: Exception | None = None
     for mdl in models:
-        for attempt in range(3):  # 各モデル最大3回
+        for attempt in range(2):
             try:
                 return client.models.generate_content(
                     model=mdl, contents=prompt, config=cfg
                 )
             except Exception as e:  # noqa: BLE001
                 last_err = e
-                if _is_transient(e) and attempt < 2:
-                    time.sleep(2 * (attempt + 1))  # 2s,4s バックオフ
+                if _match(e, _QUOTA):
+                    break  # クォータ超過→このモデルは諦め次モデルへ
+                if _match(e, _TRANSIENT) and attempt < 1:
+                    time.sleep(3)
                     continue
-                break  # 非一時エラー→次モデルへ
+                break
     raise last_err if last_err else RuntimeError("Gemini生成に失敗")
 
 

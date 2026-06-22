@@ -138,50 +138,27 @@ def generate(
         progress("日本語名などを解決中 (AI)…", 0.1)
         ident = enrich_identity(settings, ident)
 
-    # 並列で各調査を実行
-    progress("各セクションを並列調査中…", 0.15)
-    tasks: dict[str, callable] = {
-        "overview": lambda: deep_research.overview(settings, ident),
-        "market": lambda: deep_research.market(settings, ident),
-        "players": lambda: deep_research.players(settings, ident),
-        "pricing": lambda: deep_research.pricing_trends(settings, ident),
-        "nite": lambda: nite.analyze(settings, ident),
-        "customs": lambda: customs_jp.analyze(settings, ident, hs_code),
-        "reg_global": lambda: regulations.analyze_global(settings, ident),
-        "logistics": lambda: regulations.analyze_logistics(settings, ident),
-    }
-    results: dict[str, ResearchResult] = {}
-    # 並列数を絞り、無料APIの過負荷(503)を回避
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        futures = {ex.submit(fn): key for key, fn in tasks.items()}
-        done = 0
-        for fut in as_completed(futures):
-            key = futures[fut]
-            try:
-                results[key] = fut.result()
-            except Exception:
-                results[key] = ResearchResult(
-                    text="> 本セクションは一時的に取得できませんでした。再生成で解消します。"
-                )
-            done += 1
-            progress(f"調査中… ({done}/{len(tasks)})", 0.15 + 0.6 * done / len(tasks))
+    # 無料枠の回数制限(5/分・モデル別/日)に収めるため、調査は2回の呼び出しに集約
+    progress("商業インテリジェンスを調査中（市場・競争・価格）…", 0.2)
+    commercial = deep_research.commercial(settings, ident)
 
-    # 貿易データ
-    progress("世界貿易データを取得中 (UN Comtrade)…", 0.8)
-    hs6 = hs_code or guess_hs6(settings, ident)
+    progress("規制・通関・物流を調査中（NITE/財務省/REACH）…", 0.45)
+    compliance = regulations.compliance(settings, ident, hs_code)
+
+    # 規制パートの「HSCODE: nnnnnn」からHSコードを取得（無ければユーザー指定）
+    progress("世界貿易データを取得中 (UN Comtrade)…", 0.7)
+    m = re.search(r"HSCODE[:：]\s*(\d{6})", compliance.text)
+    hs6 = hs_code or (m.group(1) if m else None)
     snap = comtrade.get_trade(hs6, settings.comtrade_key) if hs6 else comtrade.TradeSnapshot(hs_code="")
     trade_md = _trade_markdown(snap)
+    # 本文からHSCODE指示行を除去
+    compliance_text = re.sub(r"\n?\*{0,2}HSCODE[:：].*", "", compliance.text)
 
-    # 引用を集約
-    all_citations: list[dict] = []
-    for r in results.values():
-        all_citations.extend(r.citations)
+    all_citations = list(commercial.citations) + list(compliance.citations)
 
-    # エグゼクティブサマリー合成
-    progress("エグゼクティブサマリーを生成中…", 0.9)
-    combined = "\n\n".join(
-        f"## {k}\n{results[k].text[:2500]}" for k in results
-    )
+    # エグゼクティブサマリー合成（3回目の呼び出し）
+    progress("エグゼクティブ・サマリーを生成中…", 0.85)
+    combined = f"{commercial.text[:9000]}\n\n{compliance_text[:7000]}"
     summary = synthesize(
         settings,
         f"""あなたは大手戦略コンサルティングファームのシニアコンサルタントです。
@@ -245,48 +222,20 @@ date={now}
 
 ---
 
-# 3. 製品概要・物性・用途
-{results['overview'].text}
+# 3. 製品・市場・競争環境・価格
+{commercial.text}
 
 ---
 
-# 4. 世界市場・需給動向
-{results['market'].text}
-
----
-
-# 5. 世界貿易フロー（UN Comtrade）
+# 4. 世界貿易フロー（UN Comtrade）
 {trade_md}
 
 ---
 
-# 6. 競争環境：主要メーカー・需要家・サプライチェーン
-{results['players'].text}
+# 5. 規制・通関・物流
+{compliance_text}
 
----
-
-# 7. 価格・トレンド・リスク・事業機会
-{results['pricing'].text}
-
----
-
-# 8. 日本国内規制（化審法・安衛法・毒劇法・消防法 等）
-{results['nite'].text}
-
----
-
-# 9. 輸出入・関税（財務省貿易統計・外為法）
-{results['customs'].text}
-
----
-
-# 10. 海外規制（EU REACH／米国TSCA／各国）
-{results['reg_global'].text}
-
----
-
-# 11. 物流・輸送規制
-{results['logistics'].text}
+**一次情報リンク:** [NITE CHRIP]({nite.CHRIP_TOP}) ／ [財務省 貿易統計]({customs_jp.CUSTOMS_STATS}) ／ [実行関税率表]({customs_jp.TARIFF_SCHEDULE})
 
 ---
 

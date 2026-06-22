@@ -9,6 +9,41 @@ from .identity import ChemicalIdentity
 from .llm import PRO_SYSTEM, ResearchResult, research
 
 
+def compliance(settings, ident: ChemicalIdentity, hs_hint: str | None = None) -> ResearchResult:
+    """日本規制・海外規制・通関・物流を1回のAPI呼び出しで網羅（無料枠節約）。"""
+    name = ident.display_name
+    cas = ident.cas or "不明"
+    hs_line = f"\nユーザー指定HSコード候補: {hs_hint}" if hs_hint else ""
+    return research(
+        settings,
+        f"""化学品『{name}』（CAS {cas}）の規制・通関・物流を、NITE CHRIP・財務省税関・
+ECHA等の一次情報をウェブ検索で確認し、正確にまとめよ。{hs_line}
+次の4部構成（Markdown、各見出しは ## で記載）:
+
+## 日本国内規制
+化審法（優先評価/監視/特定化学物質）／安衛法（表示・通知、特化則・有機則）／毒劇法（毒物・劇物）／
+化管法（PRTR・SDS）／消防法（危険物類別・指定数量）／関連環境法令／GHS分類。各々、該当有無・
+区分・根拠（政令・告示番号）を箇条書きで。不明は「要確認」。
+
+## 輸出入・関税
+最も妥当なHSコード（6桁/9桁）と分類根拠／日本の輸出入実績（数値・年）／実行関税率（基本/WTO/
+EPA特恵）／外為法（輸出貿易管理令・キャッチオール該当性）・必要な許認可。
+**末尾に必ず1行「HSCODE: <6桁数字>」を記載すること。**
+
+## 海外規制
+EU REACH（登録・トン数帯・SVHC/認可Annex XIV・制限Annex XVII）とCLP調和分類／米国TSCA／
+中国・韓国（K-REACH）等アジア／関連国際条約。該当区分を出典付きで。
+
+## 物流・輸送規制
+UN番号・正式品名(PSN)・国連分類・容器等級／海上(IMDG)・航空(IATA：旅客/貨物可否)・陸上(消防法/ADR)／
+推奨容器・UN規格容器要否・ラベル・混載禁止／保管上の注意。非危険物なら明記。
+
+根拠を併記し、断定できない点は「要確認」と明示。""",
+        system=PRO_SYSTEM,
+        max_tokens=8000,
+    )
+
+
 def analyze_global(settings, ident: ChemicalIdentity) -> ResearchResult:
     name = ident.display_name
     cas = ident.cas or "（CAS不明）"

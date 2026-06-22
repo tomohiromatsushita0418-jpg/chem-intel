@@ -23,6 +23,39 @@ def _run(settings, prompt: str, max_tokens: int = 8000) -> ResearchResult:
     return research(settings, prompt, system=SYSTEM, max_tokens=max_tokens)
 
 
+def commercial(settings, ident: ChemicalIdentity) -> ResearchResult:
+    """商業インテリジェンスを1回のAPI呼び出しで網羅（無料枠の回数節約）。"""
+    name = ident.display_name
+    cas = ident.cas or "不明"
+    return _run(
+        settings,
+        f"""化学品『{name}』（CAS {cas} / 分子式 {ident.molecular_formula or '不明'}）に
+ついて、ウェブ検索で最新の一次情報を確認し、商社の事業提案に使える詳細レポートを作成せよ。
+次の4部構成で、各部を充実させること（Markdown、各見出しは ## で記載）:
+
+## 製品概要・物性・用途
+産業上の位置づけ／外観・沸点・融点・引火点・水溶性・密度等の物性（数値）／工業的製法と
+主原料／主要用途と用途別比率（%）／川下製品。
+
+## 世界市場・需給動向
+市場規模（金額・数量）とCAGR・将来予測（年・出典明記）／主要国別の生産能力・生産量／
+地域別・用途別の需要構成と需要ドライバー／需給バランス（新増設・閉鎖）。
+
+## 競争環境：主要メーカー・需要家・サプライチェーン
+世界の主要メーカーを表で（| メーカー | 国 | 生産拠点 | 能力/シェア | 備考 |、10社目標）／
+主要ユーザー・川下産業／日本のメーカー・主要輸入元・需要家／原料→製造→流通の構造と
+商社の関与余地。
+
+## 価格・トレンド・リスク・事業機会
+直近の市況価格レンジ（地域・グレード別, USD/kg or /t、時点明記）と価格決定要因／過去数年の
+価格推移／技術・規制・需要のトレンド／供給・需要・規制・代替品のリスク／競合・代替品の優劣／
+商社としての取引機会・想定マージン感・具体的な提案。
+
+数値は出典年を明記。不確実な情報は推定と明記。""",
+        max_tokens=8000,
+    )
+
+
 def overview(settings, ident: ChemicalIdentity) -> ResearchResult:
     name = ident.display_name
     cas = ident.cas or "不明"

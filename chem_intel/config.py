@@ -58,7 +58,7 @@ def load_settings() -> Settings:
         anthropic_api_key=_get("ANTHROPIC_API_KEY"),
         research_model=_get("RESEARCH_MODEL", "claude-sonnet-4-6"),
         synthesis_model=_get("SYNTHESIS_MODEL", "claude-opus-4-8"),
-        gemini_model=_get("GEMINI_MODEL", "gemini-2.5-flash"),
+        gemini_model=_get("GEMINI_MODEL", "gemini-flash-latest"),
         comtrade_key=_get("COMTRADE_KEY"),
         database_url=_get("DATABASE_URL"),
         web_search_max_uses=int(_get("WEB_SEARCH_MAX_USES", "8")),
